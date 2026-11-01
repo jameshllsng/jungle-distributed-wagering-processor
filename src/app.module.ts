@@ -8,5 +8,7 @@ import { SqsService } from './infrastructure/messaging/sqs.service';
 import { OutboxPublisher } from './infrastructure/messaging/outbox.publisher';
 import { WageringConsumer } from './infrastructure/messaging/wagering.consumer';
 import { PendingReferenceWorker } from './infrastructure/messaging/pending-reference.worker';
-@Module({ imports: [ConfigModule.forRoot({ isGlobal: true })], controllers: [HealthController, WageringController], providers: [DatabaseService, WageringService, SqsService, OutboxPublisher, WageringConsumer, PendingReferenceWorker] })
+import { MetricsService } from './infrastructure/observability/metrics.service';
+import { MetricsController } from './infrastructure/observability/metrics.controller';
+@Module({ imports: [ConfigModule.forRoot({ isGlobal: true })], controllers: [HealthController, WageringController, MetricsController], providers: [DatabaseService, MetricsService, WageringService, SqsService, OutboxPublisher, WageringConsumer, PendingReferenceWorker] })
 export class AppModule {}
