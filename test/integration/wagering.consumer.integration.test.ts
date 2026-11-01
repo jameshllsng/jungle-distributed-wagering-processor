@@ -15,6 +15,7 @@ const config = new ConfigService({
   AWS_REGION: 'us-east-1', AWS_ACCESS_KEY_ID: 'test', AWS_SECRET_ACCESS_KEY: 'test',
   SQS_QUEUE_NAME: `wager-consumer-it-${suffix}.fifo`,
   SQS_DLQ_NAME: `wager-consumer-it-dlq-${suffix}.fifo`,
+  SQS_EVENT_QUEUE_NAME: `wager-consumer-it-events-${suffix}.fifo`,
 });
 const database = new DatabaseService(config);
 const wagering = new WageringService(database);
