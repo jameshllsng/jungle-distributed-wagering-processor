@@ -66,10 +66,10 @@ export class WageringService {
     return { walletId, storedBalance: { amount: row.balance, currency: row.currency }, calculatedBalance: { amount: row.calculated, currency: row.currency }, difference: { amount: difference.rows[0]!.value, currency: row.currency }, consistent: difference.rows[0]!.value === '0.00', checkedEntries: Number(row.checked) };
   }
 
-  async process(request: WagerRequest, idempotencyKey: string): Promise<object> {
+  async process(request: WagerRequest, idempotencyKey: string, transactionClient?: PoolClient): Promise<object> {
     if (!idempotencyKey) throw new UnprocessableEntityException('Idempotency-Key is required');
     const payloadHash = WageringService.canonicalHash(request);
-    return this.database.transaction(async (client) => {
+    const operation = async (client: PoolClient): Promise<object> => {
       const locked = await client.query<WalletRow>('select id,player_id,currency,balance::text,version from wallets where id=$1 for update', [request.walletId]);
       const wallet = locked.rows[0];
       if (!wallet) throw new NotFoundException('Wallet not found');
@@ -105,7 +105,8 @@ export class WageringService {
         return this.finish(client, transactionId, 'PROCESSED', after.balance, wallet.currency, undefined, ref?.id);
       }
       return this.finish(client, transactionId, 'PROCESSED', wallet.balance, wallet.currency, undefined, ref?.id);
-    });
+    };
+    return transactionClient ? operation(transactionClient) : this.database.transaction(operation);
   }
 
   private referenceAllowed(kind: WagerRequest['kind'], referenceKind: string): boolean { return kind === 'REFUND' ? referenceKind === 'BET' : kind === 'ROLLBACK' ? ['BET', 'WIN', 'REFUND'].includes(referenceKind) : kind === 'WIN' ? referenceKind === 'BET' : true; }
