@@ -84,4 +84,17 @@ describe('wagering integration with PostgreSQL', () => {
     expect((await database.pool.query("select 1 from outbox_messages where event_type='WagerTransactionRejected' and payload->>'failureCode'='REFERENCE_NOT_FOUND_TIMEOUT' ")).rowCount).toBe(1);
     expect(await wagering.resolvePendingReferences()).toBe(0);
   });
+
+  test('resolves a ROLLBACK received before its BET without duplicating ledger entries', async () => {
+    const playerId = randomUUID(); const wallet = await wagering.createWallet(playerId, money('100.00')) as { id: string };
+    const pending = await wagering.process(request(wallet.id, playerId, 'rollback-before-bet', 'ROLLBACK', '80.00', 'late-bet'), 'integration:rollback-before-bet') as { status: string };
+    expect(pending.status).toBe('PENDING_REFERENCE');
+    await wagering.process(request(wallet.id, playerId, 'late-bet', 'BET'), 'integration:late-bet');
+    await Promise.all([wagering.resolvePendingReferences(), wagering.resolvePendingReferences()]);
+    const result = await wagering.getProviderTransaction('integration-provider', 'rollback-before-bet') as { status: string };
+    expect(result.status).toBe('PROCESSED');
+    expect((await wagering.getWallet(wallet.id) as { balance: { amount: string } }).balance.amount).toBe('100.00');
+    expect((await database.pool.query('select 1 from wallet_ledger_entries where wallet_id=$1', [wallet.id])).rowCount).toBe(3);
+    expect((await wagering.reconcile(wallet.id) as { consistent: boolean }).consistent).toBe(true);
+  });
 });
