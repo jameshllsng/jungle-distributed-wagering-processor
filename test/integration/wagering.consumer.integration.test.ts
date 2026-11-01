@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { WageringService, type WagerRequest } from '../../src/application/wagering.service';
 import { WageringConsumer } from '../../src/infrastructure/messaging/wagering.consumer';
+import { OutboxPublisher } from '../../src/infrastructure/messaging/outbox.publisher';
 import { SqsService } from '../../src/infrastructure/messaging/sqs.service';
 import { DatabaseService } from '../../src/infrastructure/persistence/database.service';
 
@@ -19,6 +20,7 @@ const database = new DatabaseService(config);
 const wagering = new WageringService(database);
 const sqs = new SqsService(config);
 const consumer = new WageringConsumer(database, wagering, sqs);
+const publisher = new OutboxPublisher(database, sqs);
 const money = (amount: string) => ({ amount, currency: 'BRL' });
 
 function bet(walletId: string, playerId: string): WagerRequest {
@@ -132,5 +134,13 @@ describe('WageringConsumer with LocalStack SQS and PostgreSQL', () => {
     expect((await wagering.getWallet(wallet.id) as { balance: { amount: string } }).balance.amount).toBe('70.00');
     await automaticConsumer.onModuleDestroy();
     expect((await sqs.receive()).Messages ?? []).toHaveLength(0);
+  });
+
+  test('publishes committed outbox records to the isolated event queue', async () => {
+    await wagering.createWallet(randomUUID(), money('100.00'));
+    expect(await publisher.publishDue()).toBe(2);
+    const events = await sqs.receiveEvent();
+    expect(events.Messages).toHaveLength(2);
+    expect((await database.pool.query('select 1 from outbox_messages where published_at is not null')).rowCount).toBe(2);
   });
 });

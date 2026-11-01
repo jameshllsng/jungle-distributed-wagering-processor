@@ -21,7 +21,7 @@
 
 - `bun run typecheck`: aprovado.
 - `bun run test:unit`: 23 testes aprovados.
-- `bun run test:integration`: 11 testes aprovados em `jungle_test`; seis combinam PostgreSQL real e filas FIFO isoladas do LocalStack.
+- `bun run test:integration`: 12 testes aprovados em `jungle_test`; sete combinam PostgreSQL real e filas FIFO isoladas do LocalStack.
 - A integração cobre abertura/OPENING/outbox, wallet inexistente, duas BETs concorrentes, 50 replays idempotentes, REFUND duplicado, consumo SQS, rollback pré-commit, conflito de payload, redelivery pós-commit e redrive real para DLQ.
 
 ## Garantias comprovadas
@@ -40,7 +40,7 @@
 ## Riscos atuais
 
 - Worker de referências e teste de três processos independentes ainda estão pendentes.
-- O publisher ainda não possui teste real de publicação concorrente/recovery.
+- Publisher possui teste real de publicação para a fila de eventos; concorrência e recovery ainda estão pendentes.
 - O requisito de três processos independentes ainda não está comprovado.
 
 ## Limitações
