@@ -73,12 +73,15 @@ describe('wagering integration with PostgreSQL', () => {
     expect((await wagering.reconcile(wallet.id) as { consistent: boolean }).consistent).toBe(true);
   });
 
-  test('fails a missing pending reference after its retry budget without financial writes', async () => {
+  test('rejects a missing pending reference after its retry budget without financial writes', async () => {
     const playerId = randomUUID(); const wallet = await wagering.createWallet(playerId, money('100.00')) as { id: string };
     await wagering.process(request(wallet.id, playerId, 'never-refund', 'REFUND', '80.00', 'never-bet'), 'integration:never-refund');
     for (let attempt = 0; attempt < 5; attempt += 1) { await database.pool.query('update wager_transactions set next_retry_at=now() where external_transaction_id=$1', ['never-refund']); await wagering.resolvePendingReferences(); }
     const failed = await wagering.getProviderTransaction('integration-provider', 'never-refund') as { status: string; failureCode: string };
-    expect(failed).toMatchObject({ status: 'FAILED', failureCode: 'REFERENCE_NOT_FOUND_TIMEOUT' });
+    expect(failed).toMatchObject({ status: 'REJECTED', failureCode: 'REFERENCE_NOT_FOUND_TIMEOUT' });
     expect((await wagering.getWallet(wallet.id) as { balance: { amount: string } }).balance.amount).toBe('100.00');
+    expect((await database.pool.query('select 1 from wallet_ledger_entries where wallet_id=$1', [wallet.id])).rowCount).toBe(1);
+    expect((await database.pool.query("select 1 from outbox_messages where event_type='WagerTransactionRejected' and payload->>'failureCode'='REFERENCE_NOT_FOUND_TIMEOUT' ")).rowCount).toBe(1);
+    expect(await wagering.resolvePendingReferences()).toBe(0);
   });
 });

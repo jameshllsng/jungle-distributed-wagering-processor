@@ -1,5 +1,14 @@
 # Progress
 
+## Atualizacao atual (2026-11-01)
+
+- Consumer, Inbox, DLQ, polling e shutdown gracioso foram implementados e validados com PostgreSQL e LocalStack reais.
+- O teste de tres instancias Nest independentes foi publicado em `05fb7db` e aprovado.
+- `PENDING_REFERENCE` possui worker transacional com `SKIP LOCKED`, backoff exponencial e limite de cinco tentativas.
+- O esgotamento da referencia termina em `REJECTED` com `REFERENCE_NOT_FOUND_TIMEOUT` e Outbox `WagerTransactionRejected`; nao usa `FAILED`.
+- Ultima execucao: typecheck aprovado, 23 testes unitarios aprovados e 15 testes de integracao aprovados.
+- Pendencias reais: ROLLBACK fora de ordem, concorrencia/reinicio do worker, recovery concorrente da Outbox, observabilidade, aderencia efetiva ao ORM e documentacao final.
+
 ## Estado atual
 
 - Checkpoint A corrigido e publicado; Checkpoint B em implementação.
