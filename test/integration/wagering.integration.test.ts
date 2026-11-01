@@ -129,4 +129,18 @@ describe('wagering integration with PostgreSQL', () => {
     expect((await wagering.getWallet(b.id) as {balance:{amount:string}}).balance.amount).toBe('20.00');
     expect((await wagering.reconcile(a.id) as {consistent:boolean}).consistent).toBe(true); expect((await wagering.reconcile(b.id) as {consistent:boolean}).consistent).toBe(true);
   });
+
+  test('recovers a persisted pending reference after worker restart', async () => {
+    const playerId = randomUUID(); const wallet = await wagering.createWallet(playerId, money('100.00')) as { id:string };
+    await wagering.process(request(wallet.id, playerId, 'restart-refund', 'REFUND', '40.00', 'restart-bet'), 'integration:restart-refund');
+    await wagering.resolvePendingReferences(1, 5);
+    const persisted = await database.pool.query<{retry_attempts:number;status:string;next_retry_at:Date}>('select retry_attempts,status,next_retry_at from wager_transactions where external_transaction_id=$1', ['restart-refund']);
+    expect(persisted.rows[0]).toMatchObject({ status: 'PENDING_REFERENCE', retry_attempts: 1 }); expect(persisted.rows[0]?.next_retry_at).toBeDefined();
+    await wagering.process(request(wallet.id, playerId, 'restart-bet', 'BET', '40.00'), 'integration:restart-bet');
+    await database.pool.query('update wager_transactions set next_retry_at=now() where external_transaction_id=$1', ['restart-refund']);
+    const restartedService = new WageringService(database);
+    expect(await restartedService.resolvePendingReferences()).toBe(1);
+    expect((await restartedService.getProviderTransaction('integration-provider', 'restart-refund') as {status:string}).status).toBe('PROCESSED');
+    expect((await restartedService.reconcile(wallet.id) as {consistent:boolean}).consistent).toBe(true);
+  });
 });
