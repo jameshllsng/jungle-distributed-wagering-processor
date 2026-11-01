@@ -10,7 +10,7 @@ The domain uses the immutable `Money` value object backed by `decimal.js`. Publi
 
 ## Persistence and transactions
 
-MikroORM is used as the persistence boundary. The initial migration is hand-written so database guarantees are explicit and reviewable. It is reversible with `bun run migration:down`.
+MikroORM is currently used for migration configuration and execution. The runtime persistence path uses the PostgreSQL `pg` driver with explicit SQL transactions because the financial hot path requires `SELECT ... FOR UPDATE`, conditional balance updates and a shared transaction spanning Inbox, wallet, ledger and Outbox. This is an explicit trade-off and a remaining compliance risk against the challenge preference for MikroORM/TypeORM; it must not be read as MikroORM being the runtime persistence boundary.
 
 The transaction use case will execute, in one PostgreSQL transaction:
 
