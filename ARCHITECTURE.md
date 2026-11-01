@@ -1,43 +1,31 @@
 # Architecture
 
-## Scope and boundary
+## Domínio e precisão
 
-This service processes wagering operations delivered by HTTP or SQS. Both adapters invoke the same application use case. Authentication is deliberately out of scope: a future `ProviderIdentityPort`/Nest guard is the extension point; health endpoints remain public as required by the challenge.
+Uma wallet é única por `(player_id, currency)`. Cada operação cria uma `wager_transaction`; cada efeito financeiro gera um lançamento imutável no ledger. `OPENING` representa saldo inicial interno. `Money` usa `decimal.js`, contratos usam strings de duas casas e PostgreSQL usa `numeric(20,2)`; dinheiro nunca é `number` JavaScript.
 
-## Financial representation
+## PostgreSQL e concorrência
 
-The domain uses the immutable `Money` value object backed by `decimal.js`. Public contracts use `{ amount: string, currency: string }`, always at two decimal places. PostgreSQL stores amounts as `numeric(20,2)`. JavaScript `number` is never used to represent money.
+O schema garante unicidade, saldo não negativo, uma entrada de ledger por efeito e regras aritméticas; trigger bloqueia alteração ou exclusão do ledger. O hot path abre uma transação explícita, usa `SELECT ... FOR UPDATE` apenas na wallet, update condicionado para débitos, grava ledger e Outbox e então faz commit. Não existe lock global, portanto wallets distintas permanecem paralelas.
 
-## Persistence and transactions
+MikroORM atende configuração, migrations e leituras runtime. SQL nativo com `pg` é deliberado para locks, update condicionado e uma única transação para Inbox/ledger/Outbox. É um trade-off: o caminho financeiro não é integralmente gerido pelo Unit of Work.
 
-MikroORM is currently used for migration configuration and execution. The runtime persistence path uses the PostgreSQL `pg` driver with explicit SQL transactions because the financial hot path requires `SELECT ... FOR UPDATE`, conditional balance updates and a shared transaction spanning Inbox, wallet, ledger and Outbox. This is an explicit trade-off and a remaining compliance risk against the challenge preference for MikroORM/TypeORM; it must not be read as MikroORM being the runtime persistence boundary.
+## Idempotência e operações fora de ordem
 
-The transaction use case will execute, in one PostgreSQL transaction:
+`Idempotency-Key` e hash SHA-256 do payload canônico são persistidos. Replay igual retorna o resultado salvo; chave com outro payload é conflito. `REFUND` e `ROLLBACK` exigem referência compatível e única. Sem referência, tornam-se `PENDING_REFERENCE`, e um worker com `SKIP LOCKED` e backoff exponencial tenta cinco vezes antes de rejeitar com `REFERENCE_NOT_FOUND_TIMEOUT`.
 
-1. persist/check the inbox record when the source is SQS;
-2. obtain the wallet row lock (`SELECT ... FOR UPDATE` through MikroORM);
-3. persist the wager transaction, wallet change, and immutable ledger entry;
-4. persist integration events in the outbox;
-5. commit before SQS acknowledgement or publication.
+## Inbox, Outbox, retry e DLQ
 
-The database schema enforces a unique wallet per `(player_id, currency)`, a unique idempotency key, a unique `(provider_id, external_transaction_id)`, non-negative wallet balances, one ledger row per financial transaction, and the arithmetic of every ledger entry. A trigger rejects update and delete operations on the ledger.
+SQS é tratado como `at-least-once`. A Inbox é única por `(consumer_name, message_id)` e, junto da operação, ledger, Outbox e `processed_at`, é escrita antes do ack. Falhas transitórias são reentregues e cinco recebimentos acionam a DLQ.
 
-## Concurrency
+A Outbox é criada dentro do commit financeiro. Publishers concorrentes usam `FOR UPDATE SKIP LOCKED`. Falha entre envio e confirmação pode duplicar evento: o downstream deve deduplicar por `eventId`; perder evento confirmado seria pior. Após reinício, outra instância retoma Inbox, Outbox e referências pendentes porque não existe estado crítico em memória.
 
-The contention unit is `wallet_id`. A transaction locks only the affected wallet, not a global lock. The lock serializes same-wallet balance mutations across any number of app instances while different wallets remain parallel. A conditional/locked balance update plus schema checks prevents lost updates and negative balances.
+## Observabilidade
 
-## Idempotency and delivery
+Logs JSON omitem segredos e payloads financeiros; incluem os IDs aplicáveis (`correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`). `/metrics` expõe métricas Prometheus de status, duplicatas, retries, profundidade da DLQ, conflitos de lock, lag de Outbox, contagem/soma de latência e divergências. DLQ e lag são coletados das dependências reais; contadores vêm dos caminhos de processamento.
 
-The idempotency key and canonical business-payload SHA-256 will be persisted with the transaction. A matching replay returns the saved original result; the same key with a different payload hash is a conflict. SQS deduplication is only an optimization. The durable inbox key is `(consumer_name, message_id)` and the message is acknowledged only after the SQL commit.
+`POST /wallets/:walletId/reconciliation` compara saldo materializado e soma assinada do ledger. Divergências são reportadas, não corrigidas automaticamente, para preservar evidência contábil.
 
-## Outbox and recovery
+## Limitações e extensão
 
-Outbox rows are inserted within the financial transaction. Publishers claim due rows with `FOR UPDATE SKIP LOCKED`, which permits several publisher instances without a global mutex. A crash after commit and before publish leaves a durable pending row for another publisher. Consumers are idempotent, so duplicate publication is safe.
-
-## Pending references
-
-`REFUND` and `ROLLBACK` without their reference are stored as `PENDING_REFERENCE`. A scheduled worker will retry them with bounded exponential backoff; an exhausted retry budget becomes an explicit terminal rejection and produces an outbox event.
-
-## Observability
-
-Structured logs will contain correlation, message, transaction, wallet, and provider identifiers, but never full financial payloads. Metrics will cover transaction statuses, duplicate detection, retries, DLQ activity, lock conflicts, outbox lag, and processing latency. Liveness checks process health; readiness checks PostgreSQL and SQS.
+Autenticação não integra um IdP neste desafio; um guard/`ProviderIdentityPort` é o ponto de extensão na borda HTTP. Health continua público. Conflitos de lock contam erros PostgreSQL de lock; contenção saudável normalmente aparece como latência porque o fluxo aguarda o lock.

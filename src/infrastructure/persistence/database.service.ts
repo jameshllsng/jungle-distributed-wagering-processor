@@ -3,13 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { Pool, type PoolClient } from 'pg';
 import { WalletEntity, WalletSchema } from './entities/wallet.entity';
+import { MetricsService } from '../observability/metrics.service';
+import { StructuredLogger } from '../observability/structured-logger.service';
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   readonly pool: Pool;
   private readonly ormReady: Promise<MikroORM>;
 
-  constructor(config: ConfigService) {
+  constructor(config: ConfigService, private readonly metrics?: MetricsService, private readonly logger?: StructuredLogger) {
     const connectionString = config.get<string>('DATABASE_URL') ?? 'postgresql://jungle:jungle@localhost:5432/jungle';
     this.pool = new Pool({ connectionString });
     this.ormReady = MikroORM.init({ clientUrl: connectionString, entities: [WalletSchema] });
@@ -28,6 +30,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       return result;
     } catch (error) {
       await client.query('rollback');
+      if ((error as { code?: string }).code === '55P03') {
+        this.metrics?.increment('wager_lock_conflicts_total');
+        this.logger?.warn('database.lock_conflict');
+      }
       throw error;
     } finally { client.release(); }
   }

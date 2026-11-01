@@ -10,5 +10,6 @@ import { WageringConsumer } from './infrastructure/messaging/wagering.consumer';
 import { PendingReferenceWorker } from './infrastructure/messaging/pending-reference.worker';
 import { MetricsService } from './infrastructure/observability/metrics.service';
 import { MetricsController } from './infrastructure/observability/metrics.controller';
-@Module({ imports: [ConfigModule.forRoot({ isGlobal: true })], controllers: [HealthController, WageringController, MetricsController], providers: [DatabaseService, MetricsService, WageringService, SqsService, OutboxPublisher, WageringConsumer, PendingReferenceWorker] })
+import { StructuredLogger } from './infrastructure/observability/structured-logger.service';
+@Module({ imports: [ConfigModule.forRoot({ isGlobal: true })], controllers: [HealthController, WageringController, MetricsController], providers: [DatabaseService, MetricsService, StructuredLogger, WageringService, SqsService, OutboxPublisher, WageringConsumer, PendingReferenceWorker] })
 export class AppModule {}

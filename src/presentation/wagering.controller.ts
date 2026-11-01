@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { IsIn, IsNotEmpty, IsOptional, IsString, Matches, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { WageringService, type MoneyDto, type WagerRequest } from '../application/wagering.service';
@@ -19,7 +20,7 @@ export class WageringController {
   @Post('wallets') createWallet(@Body() body: CreateWalletInput): Promise<object> { return this.wagering.createWallet(body.playerId, body.initialBalance); }
   @Get('wallets/:walletId') getWallet(@Param('walletId') walletId: string): Promise<object> { return this.wagering.getWallet(walletId); }
   @Get('wallets/:walletId/ledger') ledger(@Param('walletId') walletId: string, @Query('cursor') cursor?: string, @Query('limit') limit?: string): Promise<object> { return this.wagering.getLedger(walletId, cursor, limit ? Number(limit) : 50); }
-  @Post('wagering/transactions') process(@Body() body: WagerInput, @Headers('idempotency-key') key: string | undefined): Promise<object> { return this.wagering.process(body, key ?? ''); }
+  @Post('wagering/transactions') process(@Body() body: WagerInput, @Headers('idempotency-key') key: string | undefined, @Headers('x-correlation-id') correlationId: string | undefined): Promise<object> { return this.wagering.process(body, key ?? '', undefined, { correlationId: correlationId || randomUUID() }); }
   @Get('wagering/transactions/:transactionId') transaction(@Param('transactionId') transactionId: string): Promise<object> { return this.wagering.getTransaction(transactionId); }
   @Get('providers/:providerId/wagering/transactions/:externalTransactionId') providerTransaction(@Param('providerId') providerId: string, @Param('externalTransactionId') externalTransactionId: string): Promise<object> { return this.wagering.getProviderTransaction(providerId, externalTransactionId); }
   @Post('wallets/:walletId/reconciliation') reconcile(@Param('walletId') walletId: string): Promise<object> { return this.wagering.reconcile(walletId); }

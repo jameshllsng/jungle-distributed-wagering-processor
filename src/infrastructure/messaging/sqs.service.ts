@@ -24,6 +24,13 @@ export class SqsService implements OnModuleInit {
   async sendEvent(payload: object): Promise<void> { await this.ensureQueues(); await this.client.send(new SendMessageCommand({ QueueUrl: this.eventQueueUrl, MessageBody: JSON.stringify(payload), MessageGroupId: 'wager-events', MessageDeduplicationId: randomUUID() })); }
   async receive(visibilityTimeoutSeconds?: number): Promise<ReceiveMessageCommandOutput> { await this.ensureQueues(); return this.client.send(new ReceiveMessageCommand({ QueueUrl: this.queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1, VisibilityTimeout: visibilityTimeoutSeconds })); }
   async receiveFromDlq(): Promise<ReceiveMessageCommandOutput> { await this.ensureQueues(); return this.client.send(new ReceiveMessageCommand({ QueueUrl: this.dlqUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1 })); }
+  async dlqDepth(): Promise<number> {
+    try {
+      await this.ensureQueues();
+      const attributes = await this.client.send(new GetQueueAttributesCommand({ QueueUrl: this.dlqUrl, AttributeNames: ['ApproximateNumberOfMessages'] }));
+      return Number(attributes.Attributes?.ApproximateNumberOfMessages ?? 0);
+    } catch { return 0; }
+  }
   async receiveEvent(): Promise<ReceiveMessageCommandOutput> { await this.ensureQueues(); return this.client.send(new ReceiveMessageCommand({ QueueUrl: this.eventQueueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1 })); }
   async acknowledgeEvent(receiptHandle: string): Promise<void> { await this.ensureQueues(); await this.client.send(new DeleteMessageCommand({ QueueUrl: this.eventQueueUrl, ReceiptHandle: receiptHandle })); }
   async acknowledge(receiptHandle: string): Promise<void> { await this.ensureQueues(); await this.client.send(new DeleteMessageCommand({ QueueUrl: this.queueUrl, ReceiptHandle: receiptHandle })); }

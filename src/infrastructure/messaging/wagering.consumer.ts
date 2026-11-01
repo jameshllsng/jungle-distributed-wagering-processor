@@ -4,8 +4,10 @@ import { createHash } from 'node:crypto';
 import { DatabaseService } from '../persistence/database.service';
 import { WageringService, type WagerRequest } from '../../application/wagering.service';
 import { SqsService } from './sqs.service';
+import { MetricsService } from '../observability/metrics.service';
+import { StructuredLogger } from '../observability/structured-logger.service';
 
-type Envelope = { messageId: string; type: 'WagerTransactionRequested'; data: WagerRequest & { idempotencyKey: string } };
+type Envelope = { messageId: string; correlationId?: string; type: 'WagerTransactionRequested'; data: WagerRequest & { idempotencyKey: string } };
 
 @Injectable()
 export class WageringConsumer implements OnModuleInit, OnModuleDestroy {
@@ -14,7 +16,7 @@ export class WageringConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly pollIntervalMs: number;
   private stopping = false;
   private polling?: Promise<void>;
-  constructor(private readonly database: DatabaseService, private readonly wagering: WageringService, private readonly sqs: SqsService, config?: ConfigService) {
+  constructor(private readonly database: DatabaseService, private readonly wagering: WageringService, private readonly sqs: SqsService, config?: ConfigService, private readonly metrics?: MetricsService, private readonly logger?: StructuredLogger) {
     this.pollEnabled = config?.get<string>('SQS_POLL_ENABLED') !== 'false';
     this.pollIntervalMs = Number(config?.get<string>('SQS_POLL_INTERVAL_MS') ?? 250);
   }
@@ -32,6 +34,8 @@ export class WageringConsumer implements OnModuleInit, OnModuleDestroy {
         acknowledged += 1;
       } catch (error) {
         if (this.isPermanent(error)) await this.sqs.acknowledge(message.ReceiptHandle);
+        else this.metrics?.increment('wager_retries_total', { component: 'sqs_consumer' });
+        this.logger?.warn('sqs.wager_message_failed', { messageId: message.MessageId }, { errorType: error instanceof Error ? error.name : 'unknown', permanent: this.isPermanent(error) });
       }
     }
     return acknowledged;
@@ -48,8 +52,9 @@ export class WageringConsumer implements OnModuleInit, OnModuleDestroy {
         return undefined;
       }
       const { idempotencyKey, ...request } = envelope.data;
-      const result = await this.wagering.process(request, idempotencyKey, client);
+      const result = await this.wagering.process(request, idempotencyKey, client, { correlationId: envelope.correlationId ?? envelope.messageId, messageId: envelope.messageId });
       await client.query('update inbox_messages set processed_at=now() where consumer_name=$1 and message_id=$2', [this.consumerName, envelope.messageId]);
+      this.logger?.info('sqs.wager_message_processed', { correlationId: envelope.correlationId ?? envelope.messageId, messageId: envelope.messageId, walletId: request.walletId, providerId: request.providerId });
       return result;
     });
   }

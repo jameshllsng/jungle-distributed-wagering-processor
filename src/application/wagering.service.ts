@@ -3,16 +3,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../infrastructure/persistence/database.service';
 import { MetricsService } from '../infrastructure/observability/metrics.service';
+import { StructuredLogger, type LogIdentifiers } from '../infrastructure/observability/structured-logger.service';
 
 export type MoneyDto = { amount: string; currency: string };
 export type WagerRequest = { providerId: string; externalTransactionId: string; playerId: string; walletId: string; roundId: string; gameId: string; kind: 'BET' | 'WIN' | 'LOSS' | 'REFUND' | 'ROLLBACK'; money: MoneyDto; referenceExternalTransactionId?: string };
+export type ProcessingContext = Pick<LogIdentifiers, 'correlationId' | 'messageId'>;
 
 type WalletRow = { id: string; player_id: string; currency: string; balance: string; version: number };
 type TransactionRow = { id: string; payload_hash: string; status: string; result_balance: string | null; result_currency: string | null; failure_code: string | null };
 
 @Injectable()
 export class WageringService {
-  constructor(private readonly database: DatabaseService, private readonly metrics?: MetricsService) {}
+  constructor(private readonly database: DatabaseService, private readonly metrics?: MetricsService, private readonly logger?: StructuredLogger) {}
 
   static canonicalHash(payload: object): string {
     const canonicalize = (value: unknown): unknown => Array.isArray(value) ? value.map(canonicalize)
@@ -64,11 +66,16 @@ export class WageringService {
     const result = await this.database.pool.query<{ balance: string; currency: string; calculated: string; checked: string }>(`select w.balance::text,w.currency,coalesce(sum(case when l.direction='CREDIT' then l.amount else -l.amount end),0)::text calculated,count(l.id)::text checked from wallets w left join wallet_ledger_entries l on l.wallet_id=w.id where w.id=$1 group by w.id`, [walletId]);
     const row = result.rows[0]; if (!row) throw new NotFoundException('Wallet not found');
     const difference = await this.database.pool.query<{ value: string }>('select ($1::numeric - $2::numeric)::text value', [row.balance, row.calculated]);
-    return { walletId, storedBalance: { amount: row.balance, currency: row.currency }, calculatedBalance: { amount: row.calculated, currency: row.currency }, difference: { amount: difference.rows[0]!.value, currency: row.currency }, consistent: difference.rows[0]!.value === '0.00', checkedEntries: Number(row.checked) };
+    const consistent = difference.rows[0]!.value === '0.00';
+    if (!consistent) this.metrics?.increment('wager_reconciliation_divergences_total');
+    return { walletId, storedBalance: { amount: row.balance, currency: row.currency }, calculatedBalance: { amount: row.calculated, currency: row.currency }, difference: { amount: difference.rows[0]!.value, currency: row.currency }, consistent, checkedEntries: Number(row.checked) };
   }
 
-  async process(request: WagerRequest, idempotencyKey: string, transactionClient?: PoolClient): Promise<object> {
+  async process(request: WagerRequest, idempotencyKey: string, transactionClient?: PoolClient, context: ProcessingContext = {}): Promise<object> {
     if (!idempotencyKey) throw new UnprocessableEntityException('Idempotency-Key is required');
+    const startedAt = performance.now();
+    const identifiers = { ...context, walletId: request.walletId, providerId: request.providerId };
+    this.logger?.info('wager.processing_started', identifiers, { kind: request.kind });
     const payloadHash = WageringService.canonicalHash(request);
     const operation = async (client: PoolClient): Promise<object> => {
       const locked = await client.query<WalletRow>('select id,player_id,currency,balance::text,version from wallets where id=$1 for update', [request.walletId]);
@@ -84,6 +91,7 @@ export class WageringService {
       if ((request.kind === 'REFUND' || request.kind === 'ROLLBACK') && !reference?.rows[0]) {
         await client.query('update wager_transactions set status=$2, result_balance=$3, result_currency=$4 where id=$1', [transactionId, 'PENDING_REFERENCE', wallet.balance, wallet.currency]);
         await this.outbox(client, transactionId, 'WagerTransactionPendingReference', { transactionId, walletId: wallet.id });
+        this.metrics?.increment('wager_transactions_total', { status: 'PENDING_REFERENCE' });
         return { transactionId, status: 'PENDING_REFERENCE', balance: { amount: wallet.balance, currency: wallet.currency }, idempotentReplay: false };
       }
       const ref = reference?.rows[0];
@@ -107,7 +115,16 @@ export class WageringService {
       }
       return this.finish(client, transactionId, 'PROCESSED', wallet.balance, wallet.currency, undefined, ref?.id);
     };
-    return transactionClient ? operation(transactionClient) : this.database.transaction(operation);
+    try {
+      const result = await (transactionClient ? operation(transactionClient) : this.database.transaction(operation)) as { transactionId?: string; status?: string; idempotentReplay?: boolean };
+      this.metrics?.observe('wager_processing_latency_seconds', (performance.now() - startedAt) / 1000, { status: result.status ?? 'UNKNOWN' });
+      this.logger?.info('wager.processing_completed', { ...identifiers, transactionId: result.transactionId }, { status: result.status ?? 'UNKNOWN', idempotentReplay: result.idempotentReplay ?? false });
+      return result;
+    } catch (error) {
+      this.metrics?.observe('wager_processing_latency_seconds', (performance.now() - startedAt) / 1000, { status: 'ERROR' });
+      this.logger?.warn('wager.processing_failed', identifiers, { errorType: error instanceof Error ? error.name : 'unknown' });
+      throw error;
+    }
   }
 
   async resolvePendingReferences(limit = 20, maxAttempts = 5): Promise<number> {
@@ -119,9 +136,9 @@ export class WageringService {
         const wallet = (await client.query<WalletRow>('select id,player_id,currency,balance::text,version from wallets where id=$1 for update', [row.wallet_id])).rows[0]!;
         const reference = (await client.query<TransactionRow & { kind:string; wallet_id:string; player_id:string; provider_id:string; round_id:string; amount:string; currency:string }>('select id,payload_hash,status,result_balance::text,result_currency,failure_code,kind,wallet_id,player_id,provider_id,round_id,amount::text,currency from wager_transactions where provider_id=$1 and external_transaction_id=$2', [row.provider_id, row.reference_external_transaction_id])).rows[0];
         if (!reference) {
-          if (row.retry_attempts + 1 >= maxAttempts) { await this.finish(client, row.id, 'REJECTED', wallet.balance, wallet.currency, 'REFERENCE_NOT_FOUND_TIMEOUT'); return true; }
+          if (row.retry_attempts + 1 >= maxAttempts) { await this.finish(client, row.id, 'REJECTED', wallet.balance, wallet.currency, 'REFERENCE_NOT_FOUND_TIMEOUT'); this.logger?.warn('wager.pending_reference_expired', { transactionId: row.id, walletId: row.wallet_id, providerId: row.provider_id }); return true; }
           await client.query(`update wager_transactions set retry_attempts=retry_attempts+1,next_retry_at=now() + ((power(2,retry_attempts)::int) * interval '1 second') where id=$1`, [row.id]);
-          await this.outbox(client, row.id, 'WagerTransactionPendingReferenceRetry', { transactionId: row.id, attempt: row.retry_attempts + 1 }); return true;
+          await this.outbox(client, row.id, 'WagerTransactionPendingReferenceRetry', { transactionId: row.id, attempt: row.retry_attempts + 1 }); this.metrics?.increment('wager_retries_total', { component: 'pending_reference' }); this.logger?.info('wager.pending_reference_retry', { transactionId: row.id, walletId: row.wallet_id, providerId: row.provider_id }, { attempt: row.retry_attempts + 1 }); return true;
         }
         if (reference.status !== 'PROCESSED' || reference.wallet_id !== wallet.id || reference.player_id !== wallet.player_id || reference.round_id !== row.round_id || reference.currency !== wallet.currency || reference.amount !== row.amount || !this.referenceAllowed(row.kind, reference.kind)) { await this.finish(client, row.id, 'REJECTED', wallet.balance, wallet.currency, 'INVALID_REFERENCE'); return true; }
         const prior = await client.query('select 1 from wager_transactions where kind=$1 and reference_transaction_id=$2 and status=$3 and id<>$4 limit 1', [row.kind, reference.id, 'PROCESSED', row.id]);
