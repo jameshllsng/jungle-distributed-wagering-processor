@@ -42,8 +42,8 @@ export class WageringService {
   }
 
   async getWallet(id: string): Promise<object> {
-    const result = await this.database.pool.query<WalletRow>('select id, player_id, currency, balance::text, version from wallets where id=$1', [id]);
-    const wallet = result.rows[0];
+    const entity = await this.database.findWallet(id);
+    const wallet = entity ? { id: entity.id, player_id: entity.playerId, currency: entity.currency, balance: String(entity.balance), version: entity.version } : undefined;
     if (!wallet) throw new NotFoundException('Wallet not found');
     return { id: wallet.id, playerId: wallet.player_id, balance: { amount: wallet.balance, currency: wallet.currency }, version: wallet.version };
   }

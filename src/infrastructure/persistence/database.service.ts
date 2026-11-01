@@ -1,14 +1,23 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { MikroORM } from '@mikro-orm/postgresql';
 import { Pool, type PoolClient } from 'pg';
+import { WalletEntity, WalletSchema } from './entities/wallet.entity';
 
 @Injectable()
-export class DatabaseService implements OnModuleDestroy {
+export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   readonly pool: Pool;
+  private readonly ormReady: Promise<MikroORM>;
 
   constructor(config: ConfigService) {
-    this.pool = new Pool({ connectionString: config.get<string>('DATABASE_URL') ?? 'postgresql://jungle:jungle@localhost:5432/jungle' });
+    const connectionString = config.get<string>('DATABASE_URL') ?? 'postgresql://jungle:jungle@localhost:5432/jungle';
+    this.pool = new Pool({ connectionString });
+    this.ormReady = MikroORM.init({ clientUrl: connectionString, entities: [WalletSchema] });
   }
+
+  async onModuleInit(): Promise<void> { await this.ormReady; }
+
+  async findWallet(id: string): Promise<WalletEntity | null> { return (await this.ormReady).em.fork().findOne(WalletEntity, { id }); }
 
   async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
@@ -27,5 +36,5 @@ export class DatabaseService implements OnModuleDestroy {
     try { await this.pool.query('select 1'); return true; } catch { return false; }
   }
 
-  async onModuleDestroy(): Promise<void> { await this.pool.end(); }
+  async onModuleDestroy(): Promise<void> { await this.pool.end(); await (await this.ormReady).close(true); }
 }
