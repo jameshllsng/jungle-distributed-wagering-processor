@@ -25,6 +25,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .cache
 *.tsbuildinfo
 
+# local MikroORM snapshot generated from the isolated integration database
+src/infrastructure/persistence/migrations/.snapshot-jungle_test.json
+
 # IntelliJ based IDEs
 .idea
 
