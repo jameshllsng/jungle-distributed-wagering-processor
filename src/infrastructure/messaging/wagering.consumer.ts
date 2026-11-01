@@ -1,4 +1,5 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import { DatabaseService } from '../persistence/database.service';
 import { WageringService, type WagerRequest } from '../../application/wagering.service';
@@ -7,9 +8,19 @@ import { SqsService } from './sqs.service';
 type Envelope = { messageId: string; type: 'WagerTransactionRequested'; data: WagerRequest & { idempotencyKey: string } };
 
 @Injectable()
-export class WageringConsumer {
+export class WageringConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly consumerName = 'wagering-consumer-v1';
-  constructor(private readonly database: DatabaseService, private readonly wagering: WageringService, private readonly sqs: SqsService) {}
+  private readonly pollEnabled: boolean;
+  private readonly pollIntervalMs: number;
+  private stopping = false;
+  private polling?: Promise<void>;
+  constructor(private readonly database: DatabaseService, private readonly wagering: WageringService, private readonly sqs: SqsService, config?: ConfigService) {
+    this.pollEnabled = config?.get<string>('SQS_POLL_ENABLED') !== 'false';
+    this.pollIntervalMs = Number(config?.get<string>('SQS_POLL_INTERVAL_MS') ?? 250);
+  }
+
+  onModuleInit(): void { if (this.pollEnabled) this.polling = this.pollContinuously(); }
+  async onModuleDestroy(): Promise<void> { this.stopping = true; await this.polling; }
 
   async pollOnce(): Promise<number> {
     const received = await this.sqs.receive(); let acknowledged = 0;
@@ -49,5 +60,12 @@ export class WageringConsumer {
 
   private isPermanent(error: unknown): boolean {
     return error instanceof SyntaxError || error instanceof TypeError || error instanceof HttpException;
+  }
+
+  private async pollContinuously(): Promise<void> {
+    while (!this.stopping) {
+      try { await this.pollOnce(); } catch { /* Leave the message visible for a transient retry. */ }
+      if (!this.stopping) await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+    }
   }
 }

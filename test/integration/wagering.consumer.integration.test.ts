@@ -117,4 +117,20 @@ describe('WageringConsumer with LocalStack SQS and PostgreSQL', () => {
     const dlq = await sqs.receiveFromDlq();
     expect(dlq.Messages).toHaveLength(1);
   });
+
+  test('polls continuously and stops gracefully after its in-flight receive', async () => {
+    const playerId = randomUUID();
+    const wallet = await wagering.createWallet(playerId, money('100.00')) as { id: string };
+    const messageId = randomUUID();
+    const automaticConsumer = new WageringConsumer(database, wagering, sqs, config);
+    automaticConsumer.onModuleInit();
+    await sqs.send({ messageId, type: 'WagerTransactionRequested', data: { ...bet(wallet.id, playerId), idempotencyKey: `consumer:${messageId}` } });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if ((await wagering.getWallet(wallet.id) as { balance: { amount: string } }).balance.amount === '70.00') break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect((await wagering.getWallet(wallet.id) as { balance: { amount: string } }).balance.amount).toBe('70.00');
+    await automaticConsumer.onModuleDestroy();
+    expect((await sqs.receive()).Messages ?? []).toHaveLength(0);
+  });
 });

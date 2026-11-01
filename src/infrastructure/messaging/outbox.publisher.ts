@@ -17,7 +17,7 @@ export class OutboxPublisher {
     let published = 0;
     for (const row of rows) {
       try {
-        await this.sqs.send({ eventId: row.id, eventType: row.event_type, aggregateId: row.aggregate_id, occurredAt: row.occurred_at.toISOString(), version: 1, data: row.payload });
+        await this.sqs.sendEvent({ eventId: row.id, eventType: row.event_type, aggregateId: row.aggregate_id, occurredAt: row.occurred_at.toISOString(), version: 1, data: row.payload });
         await this.database.pool.query('update outbox_messages set published_at=now(), next_attempt_at=null where id=$1 and published_at is null', [row.id]);
         published += 1;
       } catch {

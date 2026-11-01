@@ -15,12 +15,13 @@
 - Bootstrap das filas FIFO e readiness de PostgreSQL/SQS.
 - Consumer SQS e Inbox transacional implementados: Inbox, wagering e `processed_at` compartilham a mesma transação PostgreSQL, anterior ao ack.
 - DLQ e `RedrivePolicy` (`maxReceiveCount=5`) configuradas nas filas FIFO do LocalStack.
+- Polling contínuo controlado e shutdown gracioso do Consumer; eventos da Outbox usam fila FIFO própria, separada dos comandos de wagering.
 
 ## Testes executados
 
 - `bun run typecheck`: aprovado.
 - `bun run test:unit`: 23 testes aprovados.
-- `bun run test:integration`: 10 testes aprovados em `jungle_test`; cinco combinam PostgreSQL real e filas FIFO isoladas do LocalStack.
+- `bun run test:integration`: 11 testes aprovados em `jungle_test`; seis combinam PostgreSQL real e filas FIFO isoladas do LocalStack.
 - A integração cobre abertura/OPENING/outbox, wallet inexistente, duas BETs concorrentes, 50 replays idempotentes, REFUND duplicado, consumo SQS, rollback pré-commit, conflito de payload, redelivery pós-commit e redrive real para DLQ.
 
 ## Garantias comprovadas
@@ -38,7 +39,7 @@
 
 ## Riscos atuais
 
-- Polling contínuo, shutdown gracioso, worker de referências e teste de três processos independentes ainda estão pendentes.
+- Worker de referências e teste de três processos independentes ainda estão pendentes.
 - O publisher ainda não possui teste real de publicação concorrente/recovery.
 - O requisito de três processos independentes ainda não está comprovado.
 
