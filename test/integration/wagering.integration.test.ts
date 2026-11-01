@@ -97,4 +97,36 @@ describe('wagering integration with PostgreSQL', () => {
     expect((await database.pool.query('select 1 from wallet_ledger_entries where wallet_id=$1', [wallet.id])).rowCount).toBe(3);
     expect((await wagering.reconcile(wallet.id) as { consistent: boolean }).consistent).toBe(true);
   });
+
+  test('processes WIN with and without a BET reference and keeps LOSS balance-neutral', async () => {
+    const playerId = randomUUID(); const wallet = await wagering.createWallet(playerId, money('100.00')) as { id: string };
+    await wagering.process(request(wallet.id, playerId, 'bet-win', 'BET', '20.00'), 'integration:bet-win');
+    const referenced = await wagering.process(request(wallet.id, playerId, 'win-ref', 'WIN', '20.00', 'bet-win'), 'integration:win-ref') as { status: string };
+    const standalone = await wagering.process(request(wallet.id, playerId, 'win-no-ref', 'WIN', '10.00'), 'integration:win-no-ref') as { status: string };
+    const loss = await wagering.process(request(wallet.id, playerId, 'loss', 'LOSS', '99.00'), 'integration:loss') as { status: string };
+    expect(referenced.status).toBe('PROCESSED'); expect(standalone.status).toBe('PROCESSED'); expect(loss.status).toBe('PROCESSED');
+    expect((await wagering.getWallet(wallet.id) as { balance:{amount:string} }).balance.amount).toBe('110.00');
+    expect((await wagering.reconcile(wallet.id) as { consistent:boolean }).consistent).toBe(true);
+  });
+
+  test('rolls back WIN and REFUND with the appropriate debit exactly once', async () => {
+    const playerId = randomUUID(); const wallet = await wagering.createWallet(playerId, money('100.00')) as { id: string };
+    await wagering.process(request(wallet.id, playerId, 'bet', 'BET', '20.00'), 'integration:rb-bet');
+    await wagering.process(request(wallet.id, playerId, 'win', 'WIN', '20.00', 'bet'), 'integration:rb-win');
+    await wagering.process(request(wallet.id, playerId, 'rollback-win', 'ROLLBACK', '20.00', 'win'), 'integration:rb-win-back');
+    await wagering.process(request(wallet.id, playerId, 'refund', 'REFUND', '20.00', 'bet'), 'integration:rb-refund');
+    const rollbackRefund = await wagering.process(request(wallet.id, playerId, 'rollback-refund', 'ROLLBACK', '20.00', 'refund'), 'integration:rb-refund-back') as { status:string };
+    expect(rollbackRefund.status).toBe('PROCESSED');
+    expect((await wagering.getWallet(wallet.id) as { balance:{amount:string} }).balance.amount).toBe('80.00');
+    expect((await wagering.reconcile(wallet.id) as { consistent:boolean }).consistent).toBe(true);
+  });
+
+  test('keeps independent wallets correct when processed concurrently', async () => {
+    const a = await wagering.createWallet(randomUUID(), money('100.00')) as { id:string; playerId:string };
+    const b = await wagering.createWallet(randomUUID(), money('100.00')) as { id:string; playerId:string };
+    await Promise.all([wagering.process(request(a.id, a.playerId, 'a-bet', 'BET'), 'integration:a-bet'), wagering.process(request(b.id, b.playerId, 'b-bet', 'BET'), 'integration:b-bet')]);
+    expect((await wagering.getWallet(a.id) as {balance:{amount:string}}).balance.amount).toBe('20.00');
+    expect((await wagering.getWallet(b.id) as {balance:{amount:string}}).balance.amount).toBe('20.00');
+    expect((await wagering.reconcile(a.id) as {consistent:boolean}).consistent).toBe(true); expect((await wagering.reconcile(b.id) as {consistent:boolean}).consistent).toBe(true);
+  });
 });
