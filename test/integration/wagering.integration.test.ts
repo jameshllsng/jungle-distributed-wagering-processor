@@ -60,4 +60,25 @@ describe('wagering integration with PostgreSQL', () => {
     const final = await wagering.getWallet(wallet.id) as { balance: { amount: string } };
     expect(refund.status).toBe('PROCESSED'); expect(duplicate).toMatchObject({ status: 'REJECTED', failureCode: 'REFERENCE_ALREADY_REVERSED' }); expect(final.balance.amount).toBe('100.00');
   });
+
+  test('resolves a REFUND received before its BET through the pending-reference worker', async () => {
+    const playerId = randomUUID(); const wallet = await wagering.createWallet(playerId, money('100.00')) as { id: string };
+    const pending = await wagering.process(request(wallet.id, playerId, 'refund-before-bet', 'REFUND', '80.00', 'late-bet'), 'integration:refund-before-bet') as { status: string };
+    expect(pending.status).toBe('PENDING_REFERENCE');
+    await wagering.process(request(wallet.id, playerId, 'late-bet', 'BET'), 'integration:late-bet');
+    expect(await wagering.resolvePendingReferences()).toBe(1);
+    const resolved = await wagering.getProviderTransaction('integration-provider', 'refund-before-bet') as { status: string };
+    const final = await wagering.getWallet(wallet.id) as { balance: { amount: string } };
+    expect(resolved.status).toBe('PROCESSED'); expect(final.balance.amount).toBe('100.00');
+    expect((await wagering.reconcile(wallet.id) as { consistent: boolean }).consistent).toBe(true);
+  });
+
+  test('fails a missing pending reference after its retry budget without financial writes', async () => {
+    const playerId = randomUUID(); const wallet = await wagering.createWallet(playerId, money('100.00')) as { id: string };
+    await wagering.process(request(wallet.id, playerId, 'never-refund', 'REFUND', '80.00', 'never-bet'), 'integration:never-refund');
+    for (let attempt = 0; attempt < 5; attempt += 1) { await database.pool.query('update wager_transactions set next_retry_at=now() where external_transaction_id=$1', ['never-refund']); await wagering.resolvePendingReferences(); }
+    const failed = await wagering.getProviderTransaction('integration-provider', 'never-refund') as { status: string; failureCode: string };
+    expect(failed).toMatchObject({ status: 'FAILED', failureCode: 'REFERENCE_NOT_FOUND_TIMEOUT' });
+    expect((await wagering.getWallet(wallet.id) as { balance: { amount: string } }).balance.amount).toBe('100.00');
+  });
 });
