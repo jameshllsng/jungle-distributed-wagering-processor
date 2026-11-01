@@ -763,12 +763,6 @@
           "columnName": "amount"
         },
         {
-          "name": "wager_transactions_check",
-          "expression": "(kind = ANY (ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])) = (reference_external_transaction_id IS NOT NULL)",
-          "definition": "CHECK ((((kind)::text = ANY ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) = (reference_external_transaction_id IS NOT NULL)))",
-          "columnName": "kind"
-        },
-        {
           "name": "wager_transactions_check1",
           "expression": "(result_balance IS NULL) = (result_currency IS NULL)",
           "definition": "CHECK (((result_balance IS NULL) = (result_currency IS NULL)))",
@@ -784,6 +778,12 @@
           "name": "wager_transactions_kind_check",
           "expression": "\"kind\" in ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK')",
           "definition": "check (\"kind\" in ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK'))",
+          "columnName": "kind"
+        },
+        {
+          "name": "wager_transactions_reference_kind_check",
+          "expression": "((kind = ANY (ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])) AND (reference_external_transaction_id IS NOT NULL)) OR (kind = 'WIN'::text) OR ((kind = ANY (ARRAY['OPENING'::character varying, 'BET'::character varying, 'LOSS'::character varying])) AND (reference_external_transaction_id IS NULL))",
+          "definition": "CHECK (((((kind)::text = ANY ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) AND (reference_external_transaction_id IS NOT NULL)) OR ((kind)::text = 'WIN'::text) OR (((kind)::text = ANY ((ARRAY['OPENING'::character varying, 'BET'::character varying, 'LOSS'::character varying])::text[])) AND (reference_external_transaction_id IS NULL))))",
           "columnName": "kind"
         },
         {
